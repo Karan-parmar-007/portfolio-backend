@@ -12,6 +12,7 @@ from app.config import cors_settings
 from app.core.errors import register_exception_handlers
 from app.db.garage_session import GarageSession
 from app.db.postgress_session import PostgresSession
+from bootstrap import run_bootstrap
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -26,6 +27,11 @@ async def lifespan(app: FastAPI):
 
     app.state.postgres_session = postgres_session
     app.state.garage_session = garage_session
+
+    try:
+        await run_bootstrap(postgres_session._sessionmaker)
+    except Exception:
+        logger.exception("Portfolio bootstrap failed")
 
     yield
 
@@ -46,3 +52,8 @@ app.add_middleware(
 app.include_router(main_router)
 # Local-dev cookie path: refresh_token is scoped to /api/auth
 app.include_router(auth_routes.router, prefix="/api")
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
