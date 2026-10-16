@@ -1,6 +1,5 @@
 from fastapi import APIRouter
 
-from app.api.routes.auth import auth_routes
 from app.api.routes.contact_message import admin_contact_routes, contact_routes
 from app.api.routes.education import admin_education_routes, education_routes
 from app.api.routes.health import health_routes
@@ -17,7 +16,6 @@ main_router = APIRouter(prefix="/api/portfolio")
 
 # Public
 main_router.include_router(health_routes.router)
-main_router.include_router(auth_routes.router)
 main_router.include_router(media_routes.router)
 main_router.include_router(overview_routes.router)
 main_router.include_router(profile_routes.router)

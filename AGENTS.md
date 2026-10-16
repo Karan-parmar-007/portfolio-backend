@@ -39,26 +39,25 @@ and say why.
 
 ```
 new_backend/
-├── main.py                   # FastAPI app + lifespan (Postgres, Garage)
+├── main.py                   # FastAPI app + lifespan (Postgres, Garage), SSO SDK config
+├── karan_sso/                # VENDORED shared SSO SDK — never edit (sync from sso-backend/sdk)
 ├── migrate_legacy_data.py    # one-off import from the old portfolio DB + GridFS
 ├── app/
-│   ├── config.py             # pydantic-settings: Database, Auth, Cors, Media, Legacy
+│   ├── config.py             # pydantic-settings: Database, Auth (extends karan_sso.SsoSettings), Cors, Media, Legacy
 │   ├── api/
-│   │   ├── main_router.py    # APIRouter(prefix="/api/v1")
+│   │   ├── main_router.py    # APIRouter(prefix="/api/portfolio")
 │   │   ├── db_dependencies.py    # PGSessionDep, GarageClientDep
 │   │   ├── dependencies.py       # service factories
-│   │   ├── all_dependencies/     # owner_required.py — the only authz guard
-│   │   ├── middlewares/csrf.py
+│   │   ├── all_dependencies/     # owner_required.py — thin adapter over karan_sso.fastapi
 │   │   ├── schemas/              # pagination.py, common.py
 │   │   └── routes/<feature>/     # model.py, *_schemas.py, *_service.py, *_routes.py
 │   ├── core/                 # constants.py, errors.py, slug.py
 │   ├── db/                   # postgress_session.py, garage_session.py
-│   └── utils/                # security_and_auth.py (SSO JWT decode)
 ├── migrations/               # Alembic, async env.py
 └── tests/
 ```
 
-Feature folders: `health`, `auth`, `media`, `overview`, `profile`, `education`,
+Feature folders: `health`, `media`, `overview`, `profile`, `education`,
 `work_experience`, `skill`, `social_media`, `project`, `contact_message`.
 
 ## Request lifecycle
@@ -79,8 +78,8 @@ back. Routes are HTTP-only.
 1. Construct `PostgresSession()` and `GarageSession()`
 2. `await postgres_session.verify_connection()` (`SELECT 1`)
 3. Store both on `app.state`
-4. Register exception handlers, add `CSRFMiddleware`, then `CORSMiddleware`
-   (added last so it wraps CSRF and preflights are never blocked)
+4. Register exception handlers, add `karan_sso.fastapi.CSRFMiddleware`, then
+   `CORSMiddleware` (added last so it wraps CSRF and preflights are never blocked)
 5. On shutdown, dispose the Postgres engine. Garage clients are per-request.
 
 Run: `uvicorn main:app --reload --port 8001`
@@ -88,24 +87,31 @@ Run: `uvicorn main:app --reload --port 8001`
 ## Authorisation — read this before touching any admin route
 
 There is **no user table, no password handling, and no signup** in this backend.
-Identity comes from the `single_sign_on` service as an HS256 JWT in the
-`access_token` cookie. We decode it locally with `SSO_JWT_SECRET`. For admin,
-we call SSO `GET /auth/me` (backend-to-backend, cookies forwarded) and allow only
-when live `role_name == "owner"`. There is **no `OWNER_EMAIL`**. JWT role claims
-are never used for authorisation.
+Identity comes from the `single_sign_on` service (contract:
+`single_sign_on/backend/docs/SSO_CONTRACT.md`) as a JWT in the `access_token`
+cookie (or `Authorization: Bearer`). All verification goes through the vendored
+**`karan_sso`** SDK, configured once in `main.py` with `auth_settings`
+(`SSO_APP_ID=portfolio`):
 
-- One guard: `require_owner` / `OwnerDep` in `app/api/all_dependencies/owner_required.py`
-- Declare it at **router level**: `APIRouter(prefix="/admin/...", dependencies=[Depends(require_owner)])`
-- `GET /api/v1/auth/session` is the only session probe. It returns `200` even for
-  anonymous callers and includes live `role_name` / `is_owner`.
-- `POST /api/v1/auth/refresh` and `POST /api/v1/auth/logout` proxy to SSO so the
-  refresh cookie `Path=/api/v1/auth` is sent to this API.
-- SSO tokens have **no `iss` and no `aud` claim** — do not pass `audience=` or
-  `issuer=` to `jwt.decode` or every request will fail.
-- Refresh/logout are proxied; this backend never mints tokens itself.
-- `SSO_JWT_SECRET` must be byte-identical to `JWT_SECRET` in
-  `single_sign_on/backend/.env`.
-- Login UI is the SSO frontend (`SSO_FRONTEND_URL/login?next=...`).
+- Tokens are verified locally: RS256 via SSO's JWKS (HS256 with
+  `SSO_JWT_SECRET` only while the rollout lasts), `iss`/`aud` per settings.
+- Admin = live global role `owner`, confirmed with SSO `GET /auth/me` using the
+  access token as a bearer (30 s cache). Token role claims never grant access.
+  No token / invalid / revoked → `401`, non-owner → `403`, SSO unreachable →
+  `503` (never `403`).
+- One guard: `require_owner` / `OwnerDep` in
+  `app/api/all_dependencies/owner_required.py` (a thin re-export of
+  `karan_sso.fastapi`). Declare it at **router level**:
+  `APIRouter(prefix="/admin/...", dependencies=[Depends(require_owner)])`.
+- This API has **no** `/auth/*` routes. The frontend calls SSO directly
+  (`/api/auth/session`, `/refresh`, `/logout` — routed to SSO by Caddy in prod
+  and the Vite proxy in dev). Never proxy or re-implement them here, and never
+  forward the browser's Cookie header to SSO.
+- CSRF: `karan_sso.fastapi.CSRFMiddleware` — double-submit (`csrf_token`
+  cookie == `X-CSRF-Token` header) on every cookie-authenticated mutation, no
+  Referer shortcuts. Requests without session cookies (anonymous contact form,
+  bearer clients) pass. Exempt: `/health`, `/api/portfolio/health`.
+- Login UI is the SSO frontend (`https://auth.karanparmar.in/login?next=...`).
 
 ## Configuration (`.env`)
 
@@ -115,11 +121,15 @@ are never used for authorisation.
 **Garage:** `GARAGE_ENDPOINT_URL`, `GARAGE_ACCESS_KEY`, `GARAGE_SECRET_KEY`,
 `GARAGE_BUCKET_NAME`, `GARAGE_REGION_NAME`
 
-**Auth:** `SSO_JWT_SECRET`, `SSO_JWT_ALGORITHM`, `SSO_BASE_URL`,
-`SSO_FRONTEND_URL`, `ACCESS_TOKEN_COOKIE_NAME`, `CSRF_COOKIE_NAME`,
-`CSRF_HEADER_NAME`, `ENVIRONMENT`
+**Auth (read by `karan_sso`):** `SSO_BASE_URL`, `SSO_ISSUER`, `SSO_AUDIENCE`,
+`SSO_REQUIRE_AUDIENCE`, `SSO_APP_ID` (`portfolio`), `SSO_JWT_SECRET` (legacy
+HS256, rollout only), `ACCESS_TOKEN_COOKIE_NAME`, `CSRF_COOKIE_NAME`,
+`CSRF_HEADER_NAME`, `ENVIRONMENT` (`production` disables `/docs`, `/redoc`,
+`/openapi.json`)
 
-**CORS:** `CORS_ALLOWED_ORIGINS` (must include `http://localhost:5174`)
+**CORS:** `CORS_ALLOWED_ORIGINS` — explicit list; localhost entries are dropped
+when `ENVIRONMENT=production`. Allowed headers: `Content-Type`, `Authorization`,
+`X-CSRF-Token`.
 
 **Media:** `MEDIA_MAX_IMAGE_BYTES`, `MEDIA_MAX_DOCUMENT_BYTES`,
 `MEDIA_ALLOWED_IMAGE_TYPES`, `MEDIA_ALLOWED_DOCUMENT_TYPES`,
@@ -159,7 +169,7 @@ are never used for authorisation.
 - Replacement is store-new-then-delete-old, never delete-first.
 - If the Postgres commit fails after a Garage upload, `delete_object` the orphan
   before re-raising.
-- Served only through `GET /api/v1/media/{id}` with `ETag` and immutable
+- Served only through `GET /api/portfolio/media/{id}` with `ETag` and immutable
   `Cache-Control`. No presigned URLs, no base64 in JSON, no encryption.
 
 ## Migrations
@@ -183,16 +193,18 @@ pytest -m integration  # requires live Postgres and Garage
 ```
 
 `asyncio_mode = auto`. Fixtures live in `tests/conftest.py`: `app_client`,
-`db_session` (rolls back, skips if Postgres is down), `owner_cookies`,
-`non_owner_cookies`, `fake_garage_client`.
+`db_session` (rolls back, skips if Postgres is down), `sso` (a `FakeSso`: RSA
+JWKS + scripted `/auth/me`, injected via `karan_sso.fastapi.configure(settings,
+http=...)`; mint tokens with `sso.mint(...)`), `fake_garage_client`.
 
 ## Common pitfalls
 
 1. Naming anything `S3*` — this project uses Garage only.
-2. Passing `audience`/`issuer` to `jwt.decode` — SSO tokens have neither claim.
+2. Decoding JWTs or calling SSO yourself — use `karan_sso` (it handles JWKS,
+   `iss`/`aud`, live checks and the 503-on-outage rule).
 3. Forgetting `require_owner` on a new admin router. Declare it at router level.
-4. Returning `401` from `GET /auth/session` — it must return `200` with
-   `authenticated: false`, or the frontend's refresh interceptor loops.
+4. Re-adding `/auth/session`, `/auth/refresh`, `/auth/logout` or an `/api/auth`
+   mount here. The browser talks to SSO directly; this API only verifies.
 5. Creating engines or boto clients outside `app/db/` — breaks lifespan and pooling.
 6. Importing `SQLModelConfig` — not public in sqlmodel 0.0.38.
 7. Adding a `users`, `roles`, or `permissions` table. There are none. Ever.

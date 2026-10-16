@@ -1,128 +1,205 @@
-"""Owner-gate and session endpoint tests (no live DB required)."""
+"""Auth integration tests: owner gate, CSRF and the public contact form.
+
+The real `karan_sso` SDK runs against an in-process SSO (RSA JWKS + scripted
+`/auth/me`, see `FakeSso` in conftest). No live Postgres or SSO required —
+services are replaced with fakes via dependency overrides.
+"""
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, patch
+from collections.abc import Iterator
+from typing import Any
+from uuid import uuid4
 
 import httpx
 import pytest
 
+from app.api.dependencies import get_contact_message_service, get_education_service
+from tests.conftest import FakeSso
 
-@pytest.mark.asyncio
-async def test_session_unauthenticated(app_client: httpx.AsyncClient) -> None:
-    response = await app_client.get("/api/portfolio/auth/session")
-    assert response.status_code == 200
-    body = response.json()
-    assert body["authenticated"] is False
-    assert body["is_owner"] is False
-    assert body["email"] is None
-    assert body["user_id"] is None
-    assert body["role_name"] is None
-    assert body["name"] is None
+ADMIN_URL = "/api/portfolio/admin/education"
 
 
-@pytest.mark.asyncio
-async def test_session_owner_via_live_role(
-    app_client: httpx.AsyncClient,
-    owner_cookies: dict[str, str],
-) -> None:
-    with patch(
-        "app.api.all_dependencies.owner_required.fetch_sso_me",
-        new=AsyncMock(
-            return_value={
-                "id": "owner-1",
-                "email": "owner@example.com",
-                "role_name": "owner",
-                "name": "Karan Parmar",
-            }
-        ),
-    ):
-        app_client.cookies.update(owner_cookies)
-        response = await app_client.get("/api/portfolio/auth/session")
-    assert response.status_code == 200
-    body = response.json()
-    assert body["authenticated"] is True
-    assert body["is_owner"] is True
-    assert body["email"] == "owner@example.com"
-    assert body["user_id"] == "owner-1"
-    assert body["role_name"] == "owner"
-    assert body["name"] == "Karan Parmar"
+class FakeEducationService:
+    async def list_all(self) -> list[Any]:
+        return []
+
+    async def reorder(self, ids: list[Any]) -> list[Any]:
+        return []
 
 
-@pytest.mark.asyncio
-async def test_session_non_owner(
-    app_client: httpx.AsyncClient,
-    non_owner_cookies: dict[str, str],
-) -> None:
-    with patch(
-        "app.api.all_dependencies.owner_required.fetch_sso_me",
-        new=AsyncMock(
-            return_value={
-                "id": "other-1",
-                "email": "other@example.com",
-                "role_name": "user",
-            }
-        ),
-    ):
-        app_client.cookies.update(non_owner_cookies)
-        response = await app_client.get("/api/portfolio/auth/session")
-    assert response.status_code == 200
-    body = response.json()
-    assert body["authenticated"] is True
-    assert body["is_owner"] is False
-    assert body["email"] == "other@example.com"
-    assert body["role_name"] == "user"
+class FakeContactService:
+    def __init__(self) -> None:
+        self.created: list[Any] = []
+
+    async def create(self, body: Any) -> None:
+        self.created.append(body)
 
 
-@pytest.mark.asyncio
-async def test_session_jwt_role_claim_ignored(
-    app_client: httpx.AsyncClient,
-    owner_role_cookies: dict[str, str],
-) -> None:
-    """role_name in the JWT must not grant admin — only live SSO /me."""
-    with patch(
-        "app.api.all_dependencies.owner_required.fetch_sso_me",
-        new=AsyncMock(
-            return_value={
-                "id": "role-owner-1",
-                "email": "role-owner@example.com",
-                "role_name": "user",
-            }
-        ),
-    ):
-        app_client.cookies.update(owner_role_cookies)
-        response = await app_client.get("/api/portfolio/auth/session")
-    assert response.status_code == 200
-    body = response.json()
-    assert body["authenticated"] is True
-    assert body["is_owner"] is False
-    assert body["role_name"] == "user"
+@pytest.fixture
+def fake_contact() -> FakeContactService:
+    return FakeContactService()
 
 
-@pytest.mark.asyncio
-async def test_admin_route_401_without_cookie(app_client: httpx.AsyncClient) -> None:
-    """OwnerDep runs before service DI — 401 without needing Postgres."""
-    response = await app_client.get("/api/portfolio/admin/education")
+@pytest.fixture(autouse=True)
+def _service_overrides(fake_contact: FakeContactService) -> Iterator[None]:
+    from main import app
+
+    app.dependency_overrides[get_education_service] = FakeEducationService
+    app.dependency_overrides[get_contact_message_service] = lambda: fake_contact
+    try:
+        yield
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _owner(sso: FakeSso) -> dict[str, str]:
+    sso.live_roles["owner-1"] = "owner"
+    return sso.cookies(sso.mint(user_id="owner-1", email="owner@example.com", role="owner"))
+
+
+# -- owner gate ------------------------------------------------------------
+
+
+async def test_admin_401_without_token(app_client: httpx.AsyncClient, sso: FakeSso) -> None:
+    response = await app_client.get(ADMIN_URL)
     assert response.status_code == 401
-    assert "detail" in response.json()
+    assert sso.me_calls == 0
 
 
-@pytest.mark.asyncio
-async def test_admin_route_403_for_non_owner(
-    app_client: httpx.AsyncClient,
-    non_owner_cookies: dict[str, str],
-) -> None:
-    with patch(
-        "app.api.all_dependencies.owner_required.fetch_sso_me",
-        new=AsyncMock(
-            return_value={
-                "id": "other-1",
-                "email": "other@example.com",
-                "role_name": "user",
-            }
-        ),
-    ):
-        app_client.cookies.update(non_owner_cookies)
-        response = await app_client.get("/api/portfolio/admin/education")
+async def test_admin_401_with_garbage_token(app_client: httpx.AsyncClient, sso: FakeSso) -> None:
+    app_client.cookies.update({"access_token": "not-a-jwt"})
+    response = await app_client.get(ADMIN_URL)
+    assert response.status_code == 401
+
+
+async def test_admin_403_for_non_owner(app_client: httpx.AsyncClient, sso: FakeSso) -> None:
+    sso.live_roles["user-1"] = "user"
+    app_client.cookies.update(sso.cookies(sso.mint(user_id="user-1", email="u@example.com")))
+    response = await app_client.get(ADMIN_URL)
     assert response.status_code == 403
-    assert "detail" in response.json()
+    assert sso.me_calls == 1
+
+
+async def test_admin_403_when_token_claims_owner_but_live_role_is_user(
+    app_client: httpx.AsyncClient, sso: FakeSso
+) -> None:
+    """A stale `owner` claim in the token never grants access — live /me wins."""
+    sso.live_roles["demoted-1"] = "user"
+    token = sso.mint(user_id="demoted-1", email="d@example.com", role="owner")
+    app_client.cookies.update(sso.cookies(token))
+    response = await app_client.get(ADMIN_URL)
+    assert response.status_code == 403
+
+
+async def test_admin_200_for_owner(app_client: httpx.AsyncClient, sso: FakeSso) -> None:
+    app_client.cookies.update(_owner(sso))
+    response = await app_client.get(ADMIN_URL)
+    assert response.status_code == 200
+    assert response.json() == {"items": []}
+
+
+async def test_admin_200_for_owner_with_bearer(app_client: httpx.AsyncClient, sso: FakeSso) -> None:
+    sso.live_roles["owner-1"] = "owner"
+    token = sso.mint(user_id="owner-1", email="owner@example.com", role="owner")
+    response = await app_client.get(ADMIN_URL, headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+
+
+async def test_admin_401_when_sso_revoked_session(app_client: httpx.AsyncClient, sso: FakeSso) -> None:
+    # Valid signature, but SSO /me says the session is gone (no live role).
+    app_client.cookies.update(sso.cookies(sso.mint(user_id="gone-1", email="g@example.com")))
+    response = await app_client.get(ADMIN_URL)
+    assert response.status_code == 401
+
+
+async def test_admin_503_when_sso_me_fails(app_client: httpx.AsyncClient, sso: FakeSso) -> None:
+    app_client.cookies.update(_owner(sso))
+    sso.me_status = 500
+    response = await app_client.get(ADMIN_URL)
+    assert response.status_code == 503
+
+
+# -- CSRF ------------------------------------------------------------------
+
+
+async def test_csrf_403_on_cookie_mutation_without_header(
+    app_client: httpx.AsyncClient, sso: FakeSso
+) -> None:
+    app_client.cookies.update(_owner(sso))
+    response = await app_client.patch(f"{ADMIN_URL}/reorder", json={"ids": []})
+    assert response.status_code == 403
+    assert response.json()["detail"] == "CSRF token missing or invalid"
+
+
+async def test_csrf_403_with_docs_referer(app_client: httpx.AsyncClient, sso: FakeSso) -> None:
+    """The old Referer '/docs' bypass is gone."""
+    app_client.cookies.update(_owner(sso))
+    response = await app_client.patch(
+        f"{ADMIN_URL}/reorder",
+        json={"ids": []},
+        headers={"Referer": "http://test/docs"},
+    )
+    assert response.status_code == 403
+
+
+async def test_csrf_passes_with_matching_header(app_client: httpx.AsyncClient, sso: FakeSso) -> None:
+    cookies = _owner(sso)
+    app_client.cookies.update(cookies)
+    response = await app_client.patch(
+        f"{ADMIN_URL}/reorder",
+        json={"ids": [str(uuid4())]},
+        headers={"X-CSRF-Token": cookies["csrf_token"]},
+    )
+    assert response.status_code == 200
+
+
+# -- public contact form ---------------------------------------------------
+
+CONTACT = {
+    "name": "Visitor",
+    "email": "visitor@example.com",
+    "subject": "Hello",
+    "message": "Nice site",
+}
+
+
+async def test_contact_anonymous_post_works(
+    app_client: httpx.AsyncClient, sso: FakeSso, fake_contact: FakeContactService
+) -> None:
+    response = await app_client.post("/api/portfolio/contact", json=CONTACT)
+    assert response.status_code == 201
+    assert len(fake_contact.created) == 1
+
+
+async def test_contact_signed_in_post_with_csrf_header(
+    app_client: httpx.AsyncClient, sso: FakeSso, fake_contact: FakeContactService
+) -> None:
+    cookies = sso.cookies(sso.mint(user_id="user-1", email="u@example.com"))
+    app_client.cookies.update(cookies)
+    response = await app_client.post(
+        "/api/portfolio/contact",
+        json=CONTACT,
+        headers={"X-CSRF-Token": cookies["csrf_token"]},
+    )
+    assert response.status_code == 201
+
+
+# -- removed proxies -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/api/portfolio/auth/session"),
+        ("POST", "/api/portfolio/auth/refresh"),
+        ("POST", "/api/portfolio/auth/logout"),
+        ("POST", "/api/auth/refresh"),
+        ("POST", "/api/auth/logout"),
+    ],
+)
+async def test_auth_proxies_removed(
+    app_client: httpx.AsyncClient, sso: FakeSso, method: str, path: str
+) -> None:
+    response = await app_client.request(method, path)
+    assert response.status_code in (404, 405)

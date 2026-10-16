@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import secrets
-from collections.abc import AsyncIterator
-from datetime import datetime, timedelta, timezone
+import time
+from collections.abc import AsyncIterator, Iterator
 from typing import Any
 
 import httpx
+import jwt
 import pytest
-from jose import jwt
+from cryptography.hazmat.primitives.asymmetric import rsa
+from karan_sso import SsoSettings
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.api.auth_cookies import ACCESS_TOKEN_COOKIE, CSRF_TOKEN_COOKIE
-from app.config import auth_settings, db_settings
+from app.config import db_settings
 
 
 class _AsyncBody:
@@ -94,63 +96,109 @@ class StubPostgresSession:
         return None
 
 
-def _mint_access_token(
-    *,
-    email: str,
-    user_id: str = "test-user",
-    role_name: str | None = None,
-) -> str:
-    now = datetime.now(timezone.utc)
-    payload = {
-        "sub": user_id,
-        "type": "access",
-        "user_id": user_id,
-        "email": email,
-        "exp": now + timedelta(hours=1),
-    }
-    if role_name:
-        payload["role_name"] = role_name
-    return jwt.encode(
-        payload,
-        auth_settings.SSO_JWT_SECRET,
-        algorithm=auth_settings.SSO_JWT_ALGORITHM,
+SSO_TEST_BASE_URL = "http://sso.test/api"
+SSO_TEST_ISSUER = "https://auth.test/api/auth"
+
+
+class FakeSso:
+    """In-process SSO: an RSA key published as JWKS plus a scripted `/auth/me`.
+
+    Injected into the SDK with `karan_sso.fastapi.configure(settings, http=...)`
+    so tests exercise the real verifier, live check and error mapping.
+    """
+
+    def __init__(self) -> None:
+        self.kid = "test-key"
+        self._key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        # user_id -> live role_name; missing user -> /me answers 401
+        self.live_roles: dict[str, str] = {}
+        self.me_status: int | None = None  # force a status (e.g. 500 = outage)
+        self.me_calls = 0
+        self.transport = httpx.MockTransport(self._handle)
+
+    def jwks(self) -> dict[str, Any]:
+        jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(self._key.public_key()))
+        jwk.update({"kid": self.kid, "use": "sig", "alg": "RS256"})
+        return {"keys": [jwk]}
+
+    def mint(self, *, user_id: str, email: str, role: str = "user") -> str:
+        now = int(time.time())
+        claims = {
+            "iss": SSO_TEST_ISSUER,
+            "aud": "karanparmar-apps",
+            "sub": user_id,
+            "user_id": user_id,
+            "email": email,
+            "name": email.split("@")[0],
+            "email_verified": True,
+            "role": role,
+            "role_name": role,
+            "roles": {},
+            "sid": f"sid-{user_id}",
+            "jti": secrets.token_hex(8),
+            "iat": now,
+            "exp": now + 900,
+            "type": "access",
+        }
+        return jwt.encode(claims, self._key, algorithm="RS256", headers={"kid": self.kid})
+
+    def cookies(self, token: str) -> dict[str, str]:
+        return {"access_token": token, "csrf_token": secrets.token_urlsafe(16)}
+
+    def _handle(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/api/auth/.well-known/jwks.json":
+            return httpx.Response(200, json=self.jwks())
+        if path == "/api/auth/me":
+            self.me_calls += 1
+            if self.me_status is not None:
+                return httpx.Response(self.me_status, json={"detail": "scripted"})
+            token = request.headers.get("authorization", "").removeprefix("Bearer ")
+            claims = jwt.decode(token, options={"verify_signature": False})
+            role = self.live_roles.get(claims["user_id"])
+            if role is None:
+                return httpx.Response(401, json={"detail": "Not authenticated"})
+            return httpx.Response(
+                200,
+                json={
+                    "id": claims["user_id"],
+                    "email": claims["email"],
+                    "name": claims.get("name"),
+                    "email_verified": True,
+                    "role_name": role,
+                    "app_roles": {},
+                },
+            )
+        return httpx.Response(404)
+
+
+@pytest.fixture
+def sso() -> Iterator[FakeSso]:
+    """Point the SDK's default instance at a FakeSso; restore afterwards."""
+    from karan_sso.fastapi import configure
+
+    import main  # noqa: F401  (main configures the production instance on import)
+    from app.config import auth_settings
+
+    fake = FakeSso()
+    settings = SsoSettings(
+        SSO_BASE_URL=SSO_TEST_BASE_URL,
+        SSO_ISSUER=SSO_TEST_ISSUER,
+        SSO_AUDIENCE="karanparmar-apps",
+        SSO_REQUIRE_AUDIENCE=True,
+        SSO_JWT_SECRET="",
+        SSO_APP_ID="portfolio",
     )
+    configure(settings, http=lambda: httpx.AsyncClient(transport=fake.transport))
+    try:
+        yield fake
+    finally:
+        configure(auth_settings)
 
 
 @pytest.fixture
 def fake_garage_client() -> FakeGarageClient:
     return FakeGarageClient()
-
-
-@pytest.fixture
-def owner_cookies() -> dict[str, str]:
-    token = _mint_access_token(email="owner@example.com", user_id="owner-1")
-    return {
-        ACCESS_TOKEN_COOKIE: token,
-        CSRF_TOKEN_COOKIE: secrets.token_urlsafe(16),
-    }
-
-
-@pytest.fixture
-def owner_role_cookies() -> dict[str, str]:
-    token = _mint_access_token(
-        email="role-owner@example.com",
-        user_id="role-owner-1",
-        role_name="owner",
-    )
-    return {
-        ACCESS_TOKEN_COOKIE: token,
-        CSRF_TOKEN_COOKIE: secrets.token_urlsafe(16),
-    }
-
-
-@pytest.fixture
-def non_owner_cookies() -> dict[str, str]:
-    token = _mint_access_token(email="other@example.com", user_id="other-1")
-    return {
-        ACCESS_TOKEN_COOKIE: token,
-        CSRF_TOKEN_COOKIE: secrets.token_urlsafe(16),
-    }
 
 
 @pytest.fixture
