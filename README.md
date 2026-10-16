@@ -7,12 +7,12 @@ FastAPI backend for karanparmar.in. Structure mirrors `family_os/backend`.
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # then fill secrets — SSO_JWT_SECRET must match SSO JWT_SECRET
+cp .env.example .env   # then fill secrets (SSO_* vars: see AGENTS.md → Authorisation)
 alembic upgrade head
 uvicorn main:app --reload --port 8001
 ```
 
-Verify: `curl http://localhost:8001/api/v1/health/ready`
+Verify: `curl http://localhost:8001/api/portfolio/health/ready`
 
 ## Agent rules
 
@@ -30,9 +30,10 @@ Read [AGENTS.md](AGENTS.md) and [docs/portfolio-rewrite/](../docs/portfolio-rewr
 
 ## Auth
 
-No local users. Admin gates on SSO live role (`GET /auth/me` → `role_name == owner`)
-after local JWT verify. Login is on the SSO frontend; refresh/logout are proxied
-through this API. See [04-AUTH-AND-STORAGE.md](../docs/portfolio-rewrite/04-AUTH-AND-STORAGE.md).
+No local users. Auth uses the vendored `karan_sso` SDK: local JWT verify (JWKS),
+admin gates on the live SSO role (`GET /auth/me` → `role_name == owner`; SSO
+outage → 503). The browser talks to SSO (`/api/auth/*`) directly for
+session/refresh/logout — this API has no auth proxies. See [04-AUTH-AND-STORAGE.md](../docs/portfolio-rewrite/04-AUTH-AND-STORAGE.md).
 
 ## Legacy data migration
 

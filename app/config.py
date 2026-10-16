@@ -1,6 +1,9 @@
 # app/config.py
-from pydantic import field_validator
+from urllib.parse import urlsplit
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from karan_sso import SsoSettings
 
 _base_config = SettingsConfigDict(
     env_file=".env",
@@ -34,48 +37,46 @@ class DatabaseSettings(BaseSettings):
         )
 
 
-class AuthSettings(BaseSettings):
-    SSO_JWT_SECRET: str
-    SSO_JWT_ALGORITHM: str = "HS256"
-    SSO_BASE_URL: str = "http://localhost:8000/api"
-    SSO_FRONTEND_URL: str = "http://localhost:5173"
-    ACCESS_TOKEN_COOKIE_NAME: str = "access_token"
-    CSRF_COOKIE_NAME: str = "csrf_token"
-    CSRF_HEADER_NAME: str = "X-CSRF-Token"
+class AuthSettings(SsoSettings):
+    """SSO SDK settings (karan_sso) plus this app's defaults.
+
+    Read by `karan_sso` for token verification, live role checks and CSRF:
+    SSO_BASE_URL, SSO_ISSUER, SSO_AUDIENCE, SSO_REQUIRE_AUDIENCE,
+    SSO_JWT_SECRET (legacy HS256, rollout only), SSO_APP_ID, cookie names.
+    """
+
+    SSO_APP_ID: str = "portfolio"
     ENVIRONMENT: str = "development"
 
     model_config = _base_config
 
-    @field_validator("SSO_JWT_SECRET")
-    @classmethod
-    def warn_short_secret(cls, value: str) -> str:
-        if len(value) < 32:
-            import logging
+    @property
+    def is_production(self) -> bool:
+        return self.ENVIRONMENT.strip().lower() == "production"
 
-            logging.getLogger(__name__).warning(
-                "SSO_JWT_SECRET is shorter than 32 characters — check it matches the SSO JWT_SECRET"
-            )
-        return value
+
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "0.0.0.0", "::1"})
 
 
 class CorsSettings(BaseSettings):
     CORS_ALLOWED_ORIGINS: str = (
+        "https://karanparmar.in,https://www.karanparmar.in,"
         "http://localhost:5173,http://localhost:5174,http://localhost:1576,"
-        "http://localhost:1577,http://localhost:4173,http://localhost:4174,"
-        "https://karanparmar.in,https://www.karanparmar.in"
+        "http://localhost:1577,http://localhost:4173,http://localhost:4174"
     )
 
     model_config = _base_config
 
-    @property
-    def allowed_origins(self) -> list[str]:
-        if not self.CORS_ALLOWED_ORIGINS:
-            return []
-        return [
-            origin.strip()
+    def allowed_origins(self, *, production: bool) -> list[str]:
+        """Explicit origins; localhost is dropped in production."""
+        origins = [
+            origin.strip().rstrip("/")
             for origin in self.CORS_ALLOWED_ORIGINS.split(",")
             if origin.strip()
         ]
+        if production:
+            origins = [o for o in origins if urlsplit(o).hostname not in _LOCAL_HOSTS]
+        return origins
 
 
 class MediaSettings(BaseSettings):

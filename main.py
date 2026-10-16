@@ -4,11 +4,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from karan_sso.fastapi import CSRFMiddleware, configure
 
 from app.api.main_router import main_router
-from app.api.middlewares.csrf import CSRFMiddleware
-from app.api.routes.auth import auth_routes
-from app.config import cors_settings
+from app.config import auth_settings, cors_settings
 from app.core.errors import register_exception_handlers
 from app.db.garage_session import GarageSession
 from app.db.postgress_session import PostgresSession
@@ -16,6 +15,9 @@ from bootstrap import run_bootstrap
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# One SSO SDK instance for every auth dependency (SSO_APP_ID=portfolio).
+configure(auth_settings)
 
 
 @asynccontextmanager
@@ -38,20 +40,32 @@ async def lifespan(app: FastAPI):
     await postgres_session.dispose()
 
 
-app = FastAPI(title="Portfolio API", lifespan=lifespan)
+_docs_enabled = not auth_settings.is_production
+
+app = FastAPI(
+    title="Portfolio API",
+    lifespan=lifespan,
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
+)
 register_exception_handlers(app)
 # CSRF first, CORS last so CORS wraps CSRF and preflights never hit CSRF.
-app.add_middleware(CSRFMiddleware)
+# CSRF applies only to cookie-authenticated mutations; anonymous POSTs
+# (e.g. the public contact form) carry no session cookie and pass through.
+app.add_middleware(
+    CSRFMiddleware,
+    exempt_prefixes=("/health", "/api/portfolio/health"),
+    settings=auth_settings,
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_settings.allowed_origins,
+    allow_origins=cors_settings.allowed_origins(production=auth_settings.is_production),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", auth_settings.CSRF_HEADER_NAME],
 )
 app.include_router(main_router)
-# Local-dev cookie path: refresh_token is scoped to /api/auth
-app.include_router(auth_routes.router, prefix="/api")
 
 
 @app.get("/health")
