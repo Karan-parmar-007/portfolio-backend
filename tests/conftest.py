@@ -273,7 +273,7 @@ async def pg() -> AsyncIterator[AsyncSession]:
     )
     try:
         ready = (
-            await session.execute(text("SELECT to_regclass('public.data_imports')"))
+            await session.execute(text("SELECT to_regclass('public.project_tag_links')"))
         ).scalar_one_or_none()
         if ready is None:
             pytest.skip("Projects migration (0004) not applied")
@@ -293,6 +293,5 @@ async def empty_projects(pg: AsyncSession) -> AsyncSession:
     await pg.execute(text("DELETE FROM project_tag_links"))
     await pg.execute(text("DELETE FROM projects"))
     await pg.execute(text("DELETE FROM project_tags"))
-    await pg.execute(text("DELETE FROM data_imports"))
     await pg.commit()
     return pg

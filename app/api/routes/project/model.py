@@ -119,17 +119,3 @@ class Project(SQLModel, table=True):
     cover: Optional[MediaAsset] = Relationship(
         sa_relationship_kwargs={"lazy": "raise"},
     )
-
-
-class DataImport(SQLModel, table=True):
-    """One row per finished one-off data import (see project_import.py)."""
-
-    __tablename__: ClassVar[str] = "data_imports"
-
-    key: str = Field(sa_column=Column(String(64), primary_key=True))
-    done_at: datetime = Field(
-        sa_column=Column(
-            DateTime(timezone=True), server_default=func.now(), nullable=False
-        )
-    )
-    summary: Optional[dict] = Field(default=None, sa_column=Column(JSONB, nullable=True))

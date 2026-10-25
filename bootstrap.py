@@ -1,8 +1,6 @@
-"""Idempotent seed of portfolio-owned content, then the one-off all_projects import.
+"""Idempotent seed of portfolio-owned content.
 
 Skips a row when a natural key already exists. Media/images are not seeded.
-The import (app/api/routes/project/project_import.py) copies the retired
-all_projects app's projects, skills and images in once; it never raises.
 Run: python bootstrap.py
 Also runs on API startup.
 """
@@ -21,9 +19,6 @@ from app.api.routes.portfolio.education.model import Education
 from app.api.routes.portfolio.profile.model import ProfileInfo
 from app.api.routes.portfolio.social_media.model import SocialMediaLink
 from app.api.routes.portfolio.work_experience.model import WorkExperience
-from app.api.routes.project.project_import import import_all_projects
-from app.config import db_settings, project_settings
-from app.db.garage_session import GarageSession
 from app.db.postgress_session import PostgresSession
 
 logger = logging.getLogger(__name__)
@@ -331,35 +326,17 @@ async def seed(session: AsyncSession) -> None:
         print(f"social added ({row['platform']})")
 
 
-async def import_legacy_projects(sessionmaker, garage_session: GarageSession) -> None:
-    bucket = project_settings.ALL_PROJECTS_GARAGE_BUCKET_NAME or db_settings.GARAGE_BUCKET_NAME
-    try:
-        async with sessionmaker() as session:
-            async for garage in garage_session.get_client():
-                await import_all_projects(
-                    session,
-                    garage,
-                    source_bucket=bucket,
-                    studio_url=project_settings.studio_url,
-                )
-    except Exception:
-        # e.g. Garage unreachable while opening the client; retried next start.
-        logger.exception("all_projects import skipped")
-
-
-async def run_bootstrap(sessionmaker, garage_session: GarageSession | None = None) -> None:
+async def run_bootstrap(sessionmaker) -> None:
     async with sessionmaker() as session:
         await seed(session)
         await session.commit()
         print("Portfolio bootstrap complete")
-    if garage_session is not None:
-        await import_legacy_projects(sessionmaker, garage_session)
 
 
 async def main() -> None:
     postgres = PostgresSession()
     await postgres.verify_connection()
-    await run_bootstrap(postgres._sessionmaker, GarageSession())
+    await run_bootstrap(postgres._sessionmaker)
     await postgres.dispose()
 
 

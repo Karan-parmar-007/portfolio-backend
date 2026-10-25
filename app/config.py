@@ -101,20 +101,6 @@ class MediaSettings(BaseSettings):
         }
 
 
-class ProjectSettings(BaseSettings):
-    # Studio hosts the live products; "Try it now" links point into it.
-    STUDIO_URL: str = "https://studio.karanparmar.in"
-    # Bucket holding all_projects' images (apps/*) for the one-off import.
-    # Empty means the same bucket as GARAGE_BUCKET_NAME (true in production).
-    ALL_PROJECTS_GARAGE_BUCKET_NAME: str = ""
-
-    model_config = _base_config
-
-    @property
-    def studio_url(self) -> str:
-        return self.STUDIO_URL.strip().rstrip("/")
-
-
 class LegacySettings(BaseSettings):
     LEGACY_POSTGRES_URL: str = ""
     LEGACY_MONGO_URI: str = ""
@@ -127,5 +113,4 @@ db_settings = DatabaseSettings()  # type: ignore[call-arg]
 auth_settings = AuthSettings()  # type: ignore[call-arg]
 cors_settings = CorsSettings()  # type: ignore[call-arg]
 media_settings = MediaSettings()  # type: ignore[call-arg]
-project_settings = ProjectSettings()  # type: ignore[call-arg]
 legacy_settings = LegacySettings()  # type: ignore[call-arg]

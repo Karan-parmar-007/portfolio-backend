@@ -41,16 +41,6 @@ Project statuses are `live`, `offline`, `archived`. Featured projects (any
 status) sort first. "Try it now" (`try_url`) points at the exact Studio product
 page and is only returned publicly while the project is live.
 
-## all_projects import (automatic)
-
-The retired all_projects app (`ap_*` tables, same database) is imported once on
-startup by `app/api/routes/project/project_import.py`: projects (hidden ones
-dropped, maintenance → offline), tags, skills/categories and their images
-(copied into this API's own media). A `data_imports` row marks success; failures
-roll back, log and retry on the next start without blocking the API. Env:
-`STUDIO_URL` (Try-now links), `ALL_PROJECTS_GARAGE_BUCKET_NAME` (only when the
-ap images live in another bucket, as locally).
-
 ## Auth
 
 No local users. Auth uses the vendored `karan_sso` SDK: local JWT verify (JWKS),

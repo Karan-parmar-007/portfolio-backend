@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
     app.state.garage_session = garage_session
 
     try:
-        await run_bootstrap(postgres_session._sessionmaker, garage_session)
+        await run_bootstrap(postgres_session._sessionmaker)
     except Exception:
         logger.exception("Portfolio bootstrap failed")
 

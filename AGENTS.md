@@ -171,8 +171,7 @@ when `ENVIRONMENT=production`. Allowed headers: `Content-Type`, `Authorization`,
 - Every binary is a `media_assets` row plus one Garage object.
 - Keys: `portfolio/{profile|resume|skills|projects}/{media_id}/{safe_filename}`
 - Bucket comes from `GARAGE_BUCKET_NAME` (`portfolio-media` locally, the shared
-  `app-data` bucket in production). **Never write to `my-test-bucket`** — the
-  all_projects import only *reads* from it locally (`ALL_PROJECTS_GARAGE_BUCKET_NAME`).
+  `app-data` bucket in production). **Never write to `my-test-bucket`**.
 - Identical uploads of the same kind share one `media_assets` row (checksum
   de-dup). Only delete a project cover once no project references it
   (`ProjectService._release_cover`).
