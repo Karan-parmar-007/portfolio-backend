@@ -3,15 +3,16 @@ from typing import Annotated
 from fastapi import Depends
 
 from app.api.db_dependencies import GarageClientDep, PGSessionDep
-from app.api.routes.contact_message.contact_service import ContactMessageService
-from app.api.routes.education.education_service import EducationService
+from app.api.routes.portfolio.contact_message.contact_service import ContactMessageService
+from app.api.routes.portfolio.education.education_service import EducationService
 from app.api.routes.health.health_service import HealthService
 from app.api.routes.media.media_service import MediaService
-from app.api.routes.overview.overview_service import OverviewService
-from app.api.routes.profile.profile_service import ProfileService
+from app.api.routes.project.project_service import ProjectService
+from app.api.routes.portfolio.overview.overview_service import OverviewService
+from app.api.routes.portfolio.profile.profile_service import ProfileService
 from app.api.routes.skill.skill_service import SkillService
-from app.api.routes.social_media.social_media_service import SocialMediaService
-from app.api.routes.work_experience.work_experience_service import WorkExperienceService
+from app.api.routes.portfolio.social_media.social_media_service import SocialMediaService
+from app.api.routes.portfolio.work_experience.work_experience_service import WorkExperienceService
 
 
 def get_health_service(
@@ -56,6 +57,12 @@ def get_overview_service(
     return OverviewService(pg_session=session, garage_client=garage)
 
 
+def get_project_service(
+    session: PGSessionDep, garage: GarageClientDep
+) -> ProjectService:
+    return ProjectService(pg_session=session, garage_client=garage)
+
+
 def get_contact_message_service(session: PGSessionDep) -> ContactMessageService:
     return ContactMessageService(pg_session=session)
 
@@ -75,3 +82,4 @@ type OverviewServiceDep = Annotated[OverviewService, Depends(get_overview_servic
 type ContactMessageServiceDep = Annotated[
     ContactMessageService, Depends(get_contact_message_service)
 ]
+type ProjectServiceDep = Annotated[ProjectService, Depends(get_project_service)]

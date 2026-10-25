@@ -54,7 +54,12 @@ class FakeGarageClient:
     async def get_object(self, *, Bucket: str, Key: str, **_kwargs: Any) -> dict[str, Any]:
         item = self.objects.get((Bucket, Key))
         if item is None:
-            raise KeyError(f"NoSuchKey: {Bucket}/{Key}")
+            from botocore.exceptions import ClientError
+
+            raise ClientError(
+                {"Error": {"Code": "NoSuchKey", "Message": f"{Bucket}/{Key}"}},
+                "GetObject",
+            )
         return {
             "Body": _AsyncBody(item["Body"]),
             "ContentType": item.get("ContentType"),
@@ -243,3 +248,51 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         pytest.skip(f"Database not available: {exc}")
     finally:
         await engine.dispose()
+
+
+@pytest.fixture
+async def pg() -> AsyncIterator[AsyncSession]:
+    """Live session inside one outer transaction that is always rolled back.
+
+    Service `commit()` calls only release a SAVEPOINT, so tests can exercise
+    real commits without leaving rows behind. Skips when Postgres is down or
+    the 0004 projects migration has not been applied.
+    """
+    from sqlalchemy import text
+    from sqlalchemy.pool import NullPool
+
+    engine = create_async_engine(db_settings.POSTGRES_URL, poolclass=NullPool)
+    try:
+        conn = await engine.connect()
+    except Exception as exc:  # noqa: BLE001 - any connect failure means "no DB"
+        await engine.dispose()
+        pytest.skip(f"Database not available: {exc}")
+    trans = await conn.begin()
+    session = AsyncSession(
+        bind=conn, expire_on_commit=False, join_transaction_mode="create_savepoint"
+    )
+    try:
+        ready = (
+            await session.execute(text("SELECT to_regclass('public.data_imports')"))
+        ).scalar_one_or_none()
+        if ready is None:
+            pytest.skip("Projects migration (0004) not applied")
+        yield session
+    finally:
+        await session.close()
+        await trans.rollback()
+        await conn.close()
+        await engine.dispose()
+
+
+@pytest.fixture
+async def empty_projects(pg: AsyncSession) -> AsyncSession:
+    """`pg` with the project tables emptied (inside the rolled-back transaction)."""
+    from sqlalchemy import text
+
+    await pg.execute(text("DELETE FROM project_tag_links"))
+    await pg.execute(text("DELETE FROM projects"))
+    await pg.execute(text("DELETE FROM project_tags"))
+    await pg.execute(text("DELETE FROM data_imports"))
+    await pg.commit()
+    return pg

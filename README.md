@@ -28,6 +28,29 @@ Read [AGENTS.md](AGENTS.md) and [docs/portfolio-rewrite/](../docs/portfolio-rewr
 | Postgres | 5433 |
 | Garage | 3900 |
 
+## Routes (prefix `/api/portfolio`)
+
+| Module | Public | Admin (owner only) |
+|---|---|---|
+| portfolio | `GET /portfolio/overview` (profile, education, work, social, home skills, featured + first projects), `/portfolio/profile`, `/portfolio/education`, `/portfolio/work-experience`, `/portfolio/social-media`, `POST /contact` | `/admin/profile`, `/admin/education`, `/admin/work-experience`, `/admin/social-media`, `/admin/contact-messages` |
+| project | `GET /portfolio/projects?q=&status=&skill=&tag=&page=&page_size=`, `GET /portfolio/projects/{slug}`, `GET /portfolio/project-facets` (all cached 60 s) | `/admin/projects` (CRUD), `PATCH /admin/projects/reorder`, `PATCH /admin/projects/{id}/featured`, `PATCH /admin/projects/{id}/status`, `PUT/DELETE /admin/projects/{id}/cover`, `/admin/project-tags` |
+| skill | `GET /portfolio/skill-categories`, `GET /portfolio/skills` | `/admin/skill-categories`, `/admin/skills` (+ reorder, icon) |
+| media / health | `GET /media/{id}`, `GET /health/ready` | — |
+
+Project statuses are `live`, `offline`, `archived`. Featured projects (any
+status) sort first. "Try it now" (`try_url`) points at the exact Studio product
+page and is only returned publicly while the project is live.
+
+## all_projects import (automatic)
+
+The retired all_projects app (`ap_*` tables, same database) is imported once on
+startup by `app/api/routes/project/project_import.py`: projects (hidden ones
+dropped, maintenance → offline), tags, skills/categories and their images
+(copied into this API's own media). A `data_imports` row marks success; failures
+roll back, log and retry on the next start without blocking the API. Env:
+`STUDIO_URL` (Try-now links), `ALL_PROJECTS_GARAGE_BUCKET_NAME` (only when the
+ap images live in another bucket, as locally).
+
 ## Auth
 
 No local users. Auth uses the vendored `karan_sso` SDK: local JWT verify (JWKS),

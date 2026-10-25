@@ -47,14 +47,14 @@ from sqlalchemy.ext.asyncio import (
 )
 from botocore.client import Config
 
-from app.api.routes.education.model import Education
+from app.api.routes.portfolio.education.model import Education
 from app.api.routes.media.media_service import _safe_filename, _sniff_dimensions
 from app.api.routes.media.model import MediaAsset
-from app.api.routes.profile.model import ProfileInfo
+from app.api.routes.portfolio.profile.model import ProfileInfo
 from app.api.routes.project.model import AccessLevel, Project, ProjectSkill
 from app.api.routes.skill.model import Skill, SkillCategory
-from app.api.routes.social_media.model import SocialMediaLink
-from app.api.routes.work_experience.model import WorkExperience
+from app.api.routes.portfolio.social_media.model import SocialMediaLink
+from app.api.routes.portfolio.work_experience.model import WorkExperience
 from app.config import db_settings, legacy_settings, media_settings
 from app.core.constants import MEDIA_KIND_PREFIX, SOCIAL_PLATFORMS, MediaKind
 

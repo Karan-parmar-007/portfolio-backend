@@ -10,7 +10,6 @@ from sqlalchemy.orm import selectinload
 
 from app.api.routes.media.media_schemas import media_asset_to_ref
 from app.api.routes.media.media_service import MediaService
-from app.api.routes.media.model import MediaAsset
 from app.api.routes.skill.model import Skill, SkillCategory
 from app.api.routes.skill.skill_schemas import (
     SkillCategoryCreateRequest,
@@ -31,16 +30,6 @@ class SkillService:
         self.pg_session = pg_session
         self.media = MediaService(pg_session=pg_session, garage_client=garage_client)
 
-    async def _icon_ref(self, media_id: UUID | None):
-        if media_id is None:
-            return None
-        asset = (
-            await self.pg_session.execute(
-                select(MediaAsset).where(MediaAsset.id == media_id)
-            )
-        ).scalar_one_or_none()
-        return media_asset_to_ref(asset)
-
     async def skill_to_response(self, skill: Skill) -> SkillResponse:
         category_name = skill.category.name if skill.category else None
         return SkillResponse(
@@ -50,7 +39,7 @@ class SkillService:
             category_id=skill.category_id,
             category_name=category_name,
             show_in_about=skill.show_in_about,
-            icon=await self._icon_ref(skill.icon_media_id),
+            icon=media_asset_to_ref(skill.icon),
         )
 
     async def _category_to_response(self, cat: SkillCategory) -> SkillCategoryResponse:
@@ -261,6 +250,7 @@ class SkillService:
                 select(Skill)
                 .options(selectinload(Skill.category))
                 .where(Skill.id == row.id)
+                .execution_options(populate_existing=True)
             )
         ).scalar_one()
         return await self.skill_to_response(loaded)
@@ -332,6 +322,7 @@ class SkillService:
                 select(Skill)
                 .options(selectinload(Skill.category))
                 .where(Skill.id == skill_id)
+                .execution_options(populate_existing=True)
             )
         ).scalar_one()
         return await self.skill_to_response(loaded)

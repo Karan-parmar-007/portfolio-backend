@@ -118,10 +118,31 @@ class MediaService:
 
     async def store(self, file: UploadFile, kind: MediaKind) -> MediaAsset:
         content = await file.read()
+        return await self.store_bytes(
+            content,
+            filename=file.filename,
+            content_type=file.content_type,
+            kind=kind,
+        )
+
+    async def store_bytes(
+        self,
+        content: bytes,
+        *,
+        filename: str | None,
+        content_type: str | None,
+        kind: MediaKind,
+        commit: bool = True,
+    ) -> MediaAsset:
+        """Validate, upload and record bytes.
+
+        With `commit=False` the row is only flushed: the caller owns the
+        transaction and must delete `asset.object_key` if it rolls back.
+        """
         if not content:
             raise MediaError("File is empty")
 
-        content_type = (file.content_type or "").split(";")[0].strip().lower()
+        content_type = (content_type or "").split(";")[0].strip().lower()
         allowed = self._allowed_types(kind)
         if content_type not in allowed:
             raise MediaError(
@@ -141,8 +162,9 @@ class MediaService:
                     MediaAsset.checksum_sha256 == checksum,
                     MediaAsset.kind == kind,
                 )
+                .limit(1)
             )
-        ).scalar_one_or_none()
+        ).scalars().first()
         if existing is not None:
             return existing
 
@@ -151,7 +173,7 @@ class MediaService:
             width, height = _sniff_dimensions(content, content_type)
 
         media_id = uuid6.uuid7()
-        filename = _safe_filename(file.filename)
+        filename = _safe_filename(filename)
         prefix = MEDIA_KIND_PREFIX[kind]
         object_key = f"{prefix}/{media_id}/{filename}"
 
@@ -177,6 +199,9 @@ class MediaService:
         )
         self.pg_session.add(asset)
         try:
+            if not commit:
+                await self.pg_session.flush()
+                return asset
             await self.pg_session.commit()
             await self.pg_session.refresh(asset)
         except Exception:

@@ -11,12 +11,12 @@ from sqlmodel import SQLModel
 from app.config import db_settings
 
 import app.api.routes.media.model  # noqa: F401
-import app.api.routes.profile.model  # noqa: F401
-import app.api.routes.education.model  # noqa: F401
-import app.api.routes.work_experience.model  # noqa: F401
+import app.api.routes.portfolio.profile.model  # noqa: F401
+import app.api.routes.portfolio.education.model  # noqa: F401
+import app.api.routes.portfolio.work_experience.model  # noqa: F401
 import app.api.routes.skill.model  # noqa: F401
-import app.api.routes.social_media.model  # noqa: F401
-import app.api.routes.contact_message.model  # noqa: F401
+import app.api.routes.portfolio.social_media.model  # noqa: F401
+import app.api.routes.portfolio.contact_message.model  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", db_settings.POSTGRES_URL)

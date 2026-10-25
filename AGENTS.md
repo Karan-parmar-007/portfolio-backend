@@ -50,15 +50,22 @@ new_backend/
 │   │   ├── dependencies.py       # service factories
 │   │   ├── all_dependencies/     # owner_required.py — thin adapter over karan_sso.fastapi
 │   │   ├── schemas/              # pagination.py, common.py
-│   │   └── routes/<feature>/     # model.py, *_schemas.py, *_service.py, *_routes.py
-│   ├── core/                 # constants.py, errors.py, slug.py
+│   │   └── routes/
+│   │       ├── portfolio/<feature>/  # profile, education, work_experience, social_media,
+│   │       │                         # contact_message, overview
+│   │       ├── project/              # projects, tags, one-off all_projects import
+│   │       ├── skill/                # skill categories + skills
+│   │       ├── media/  health/
+│   │       └── (each feature: model.py, *_schemas.py, *_service.py, *_routes.py, admin_*_routes.py)
+│   ├── core/                 # constants.py, errors.py, slug.py, html_sanitize.py
 │   ├── db/                   # postgress_session.py, garage_session.py
 ├── migrations/               # Alembic, async env.py
 └── tests/
 ```
 
-Feature folders: `health`, `media`, `overview`, `profile`, `education`,
-`work_experience`, `skill`, `social_media`, `project`, `contact_message`.
+Modules: `portfolio` (profile, education, work_experience, social_media,
+contact_message, overview — the "about me" content), `project`, `skill`,
+plus `media` and `health`. URLs did not change when files moved into `portfolio/`.
 
 ## Request lifecycle
 
@@ -163,8 +170,12 @@ when `ENVIRONMENT=production`. Allowed headers: `Content-Type`, `Authorization`,
 
 - Every binary is a `media_assets` row plus one Garage object.
 - Keys: `portfolio/{profile|resume|skills|projects}/{media_id}/{safe_filename}`
-- Bucket is `portfolio-media`. **Never write to `my-test-bucket`** — that belongs
-  to `family_os`.
+- Bucket comes from `GARAGE_BUCKET_NAME` (`portfolio-media` locally, the shared
+  `app-data` bucket in production). **Never write to `my-test-bucket`** — the
+  all_projects import only *reads* from it locally (`ALL_PROJECTS_GARAGE_BUCKET_NAME`).
+- Identical uploads of the same kind share one `media_assets` row (checksum
+  de-dup). Only delete a project cover once no project references it
+  (`ProjectService._release_cover`).
 - Validate content type and size before uploading; reject with a `MediaError`.
 - Replacement is store-new-then-delete-old, never delete-first.
 - If the Postgres commit fails after a Garage upload, `delete_object` the orphan
@@ -209,9 +220,12 @@ http=...)`; mint tokens with `sso.mint(...)`), `fake_garage_client`.
 6. Importing `SQLModelConfig` — not public in sqlmodel 0.0.38.
 7. Adding a `users`, `roles`, or `permissions` table. There are none. Ever.
 8. Deleting the old media before the new upload commits.
-9. Writing `search_vector` from application code — it is trigger-maintained.
-10. Public project endpoints forgetting the `access_levels.is_public = true` filter,
-    which leaks private projects.
+9. Writing `projects.search_text` from application code — it is a generated
+   column (name + short description + tech stack), trigram-indexed for search.
+10. Adding a "hidden"/draft project status. Statuses are exactly `live`, `offline`,
+    `archived`; every project in the table is public. Featured projects (any
+    status) always sort first: `is_featured DESC, sequence, name`. Public
+    responses only expose `try_url` while the project is `live`.
 11. Returning `200` when a readiness check fails — it must be `503`.
 12. Reintroducing the legacy quirks: `"Score"`, `ngrok_url`,
     `is_interesting_project`, `project_image_base_six_four`.

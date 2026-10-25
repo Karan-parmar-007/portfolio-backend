@@ -7,6 +7,8 @@ import uuid6
 from sqlalchemy import Boolean, Column, DateTime, Integer, String
 from sqlmodel import Field, Relationship, SQLModel, func
 
+from app.api.routes.media.model import MediaAsset
+
 
 class SkillCategory(SQLModel, table=True):
     __tablename__: ClassVar[str] = "skill_categories"
@@ -70,3 +72,5 @@ class Skill(SQLModel, table=True):
     )
 
     category: Optional[SkillCategory] = Relationship(back_populates="skills")
+    # Always batch-loaded with the skill so listing icons is not one query per skill.
+    icon: Optional[MediaAsset] = Relationship(sa_relationship_kwargs={"lazy": "selectin"})
